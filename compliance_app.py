@@ -1,75 +1,94 @@
 import streamlit as st
-from pypdf import PdfReader
 import google.generativeai as genai
-import json
 import pandas as pd
+import json
+import time
+import os
 
-st.set_page_config(page_title="Gemini 2.0 Compliance Auditor", layout="wide")
+st.set_page_config(page_title="Gemini 2.0 Auditor", layout="wide")
 
 # --- API SETUP ---
 st.sidebar.header("AI Configuration")
 api_key = st.sidebar.text_input("Gemini API Key", type="password")
-model_choice = st.sidebar.selectbox("Model Version", ["gemini-2.0-flash-exp", "gemini-2.0-pro-exp"])
 
 if api_key:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_choice)
+    # Using Gemini 2.0 Flash for speed and high context
+    model = genai.GenerativeModel("gemini-2.0-flash-exp")
 else:
-    st.warning("🔑 Enter your Gemini API Key to unlock AI analysis.")
+    st.warning("🔑 Enter your Gemini API Key in the sidebar to begin.")
 
 st.title("⚖️ Gemini 2.0 Regulatory Auditor")
-st.markdown("Upload a legal notice. The AI will cross-reference the findings with your Fraud Model parameters.")
+st.markdown("Upload an enforcement notice. Gemini 2.0 will 'read' the document directly, bypassing encryption issues.")
 
 uploaded_file = st.file_uploader("Upload Enforcement Notice (PDF)", type="pdf")
 
 if uploaded_file and api_key:
-    # 1. Extract Full Text (Gemini 2.0 can handle huge contexts)
-    with st.spinner("Processing Document..."):
-        reader = PdfReader(uploaded_file)
-        full_text = " ".join([page.extract_text() for page in reader.pages])
+    # 1. Save and Upload to Google File API
+    with st.spinner("Uploading to Gemini 2.0..."):
+        # Temporary save for the API to pick up
+        temp_path = f"temp_{uploaded_file.name}"
+        with open(temp_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # Native PDF Upload
+        sample_file = genai.upload_file(path=temp_path, mime_type="application/pdf")
+        
+        # Delete temp file from local storage
+        os.remove(temp_path)
 
-    # 2. AI Prompt tuned for 2.0 Reasoning
-    prompt = f"""
-    Act as a Senior Compliance Officer. Review this enforcement notice:
-    
-    {full_text}
+    # 2. Wait for Processing
+    # Files are often in a 'PROCESSING' state for a few seconds
+    while sample_file.state.name == "PROCESSING":
+        time.sleep(2)
+        sample_file = genai.get_file(sample_file.name)
 
-    Identify the core 'Thematic Failures' that led to the fine. 
-    For each failure, provide a structured response in JSON format:
-    1. 'area': The high-level risk (e.g., Velocity, High-Value, Thresholds).
-    2. 'finding': What the firm did wrong.
-    3. 'dial_fix': How to adjust a fraud model. Choose exactly one: ('Increase Sensitivity', 'Increase Amount Weight', 'Increase Velocity Weight').
-    4. 'severity': (Low, Medium, High).
+    # 3. AI Analysis Prompt
+    prompt = """
+    Identify the top 4 specific operational or 'Transaction Monitoring' failures in this document.
+    For each failure, output a JSON object with:
+    - 'area': High-level failure name.
+    - 'reasoning': Why the regulator was upset.
+    - 'severity': High, Medium, or Low.
+    - 'dial_fix': One of ('Increase Sensitivity', 'Increase Amount Weight', 'Increase Velocity Weight').
 
-    Output ONLY a JSON list of objects.
+    Format the final output as a JSON list.
     """
 
-    with st.spinner("Gemini 2.0 is reasoning over the legal text..."):
+    with st.spinner("AI is reasoning over the document..."):
         try:
-            response = model.generate_content(prompt)
-            # Clean JSON formatting
-            raw_json = response.text.replace('```json', '').replace('```', '').strip()
-            findings = json.loads(raw_json)
-
-            st.header("📋 Gap Analysis Questionnaire")
+            # Send file object + prompt
+            response = model.generate_content([sample_file, prompt])
             
-            audit_results = []
+            # Parse JSON
+            raw_text = response.text.replace('```json', '').replace('```', '').strip()
+            findings = json.loads(raw_text)
+
+            st.header("📋 AI-Generated Gap Questionnaire")
+            
+            audit_data = []
             for i, item in enumerate(findings):
-                with st.expander(f"{item['area']} - Severity: {item['severity']}", expanded=True):
-                    st.error(f"**Regulatory Finding:** {item['finding']}")
-                    st.info(f"💡 **Simulator Recommendation:** {item['dial_fix']}")
+                with st.expander(f"Violation: {item['area']} ({item['severity']})", expanded=True):
+                    st.error(f"**Regulatory Finding:** {item['reasoning']}")
+                    st.info(f"💡 **Suggested Fix:** {item['dial_fix']}")
                     
-                    status = st.select_slider("Internal Assessment:", 
-                                            options=["Critical Gap", "Partial", "Compliant"], 
+                    # Manual user input for the 'Gap Analysis'
+                    status = st.select_slider("Assessment:", 
+                                            options=["Critical Gap", "Partial Gap", "Compliant"], 
                                             key=f"status_{i}")
                     plan = st.text_area("Remediation Plan:", key=f"plan_{i}")
                     
-                    audit_results.append({"Area": item['area'], "Status": status, "Plan": plan})
+                    audit_data.append({"Area": item['area'], "Status": status, "Plan": plan})
 
-            # Export Capability
-            if audit_results:
-                csv = pd.DataFrame(audit_results).to_csv(index=False)
-                st.download_button("📩 Download Audit Report", csv, "compliance_audit.csv", "text/csv")
+            # 4. Clean up file from Google Cloud (good practice)
+            genai.delete_file(sample_file.name)
+
+            # Export Report
+            if audit_data:
+                df_report = pd.DataFrame(audit_data)
+                st.download_button("📩 Download Final Audit Report", df_report.to_csv(index=False), "gap_analysis.csv")
 
         except Exception as e:
             st.error(f"Analysis Failed: {e}")
+            if 'response' in locals():
+                st.write("Raw AI Output:", response.text)
