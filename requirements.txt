@@ -1,3 +1,4 @@
 streamlit
-pypdf
+pypdf[crypto]
 google-generativeai
+pandas
