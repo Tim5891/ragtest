@@ -2,80 +2,74 @@ import streamlit as st
 from pypdf import PdfReader
 import google.generativeai as genai
 import json
+import pandas as pd
 
-st.set_page_config(page_title="AI Regulatory Auditor", layout="wide")
+st.set_page_config(page_title="Gemini 2.0 Compliance Auditor", layout="wide")
 
 # --- API SETUP ---
-st.sidebar.header("Settings")
-api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+st.sidebar.header("AI Configuration")
+api_key = st.sidebar.text_input("Gemini API Key", type="password")
+model_choice = st.sidebar.selectbox("Model Version", ["gemini-2.0-flash-exp", "gemini-2.0-pro-exp"])
 
 if api_key:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel(model_choice)
 else:
-    st.warning("Please enter your Gemini API Key in the sidebar to begin.")
+    st.warning("🔑 Enter your Gemini API Key to unlock AI analysis.")
 
-# --- APP UI ---
-st.title("⚖️ AI-Powered Regulatory Gap Analysis")
-st.markdown("Upload an enforcement notice. Gemini will extract specific failures and suggest 'Dial Fixes' for your Fraud Simulator.")
+st.title("⚖️ Gemini 2.0 Regulatory Auditor")
+st.markdown("Upload a legal notice. The AI will cross-reference the findings with your Fraud Model parameters.")
 
 uploaded_file = st.file_uploader("Upload Enforcement Notice (PDF)", type="pdf")
 
 if uploaded_file and api_key:
-    # 1. Extract Text
-    with st.spinner("Reading PDF..."):
+    # 1. Extract Full Text (Gemini 2.0 can handle huge contexts)
+    with st.spinner("Processing Document..."):
         reader = PdfReader(uploaded_file)
-        text = " ".join([page.extract_text() for page in reader.pages])
+        full_text = " ".join([page.extract_text() for page in reader.pages])
 
-    # 2. AI Analysis Prompt
+    # 2. AI Prompt tuned for 2.0 Reasoning
     prompt = f"""
-    You are an expert Regulatory Compliance Auditor. Analyze the following enforcement notice text:
+    Act as a Senior Compliance Officer. Review this enforcement notice:
     
-    {text[:10000]} 
+    {full_text}
 
-    Identify the top 3-4 specific operational failures related to transaction monitoring or fraud.
-    For each failure, provide:
-    1. A short title of the violation.
-    2. A brief description of what the regulator found.
-    3. A 'Recommended Dial Fix' for a fraud model (choose from: 'Increase Sensitivity', 'Increase Amount Weight', or 'Increase Velocity Weight').
+    Identify the core 'Thematic Failures' that led to the fine. 
+    For each failure, provide a structured response in JSON format:
+    1. 'area': The high-level risk (e.g., Velocity, High-Value, Thresholds).
+    2. 'finding': What the firm did wrong.
+    3. 'dial_fix': How to adjust a fraud model. Choose exactly one: ('Increase Sensitivity', 'Increase Amount Weight', 'Increase Velocity Weight').
+    4. 'severity': (Low, Medium, High).
 
-    Format your output ONLY as a valid JSON list of objects like this:
-    [
-      {{"area": "Title", "description": "Description", "fix": "Fix Name"}}
-    ]
+    Output ONLY a JSON list of objects.
     """
 
-    # 3. Call Gemini
-    with st.spinner("Gemini is analyzing the notice for gaps..."):
+    with st.spinner("Gemini 2.0 is reasoning over the legal text..."):
         try:
             response = model.generate_content(prompt)
-            # Clean the response in case Gemini adds markdown backticks
-            clean_json = response.text.replace('```json', '').replace('```', '').strip()
-            findings = json.loads(clean_json)
+            # Clean JSON formatting
+            raw_json = response.text.replace('```json', '').replace('```', '').strip()
+            findings = json.loads(raw_json)
 
-            # 4. Display findings as a Questionnaire
-            st.header("📋 AI-Generated Gap Questionnaire")
+            st.header("📋 Gap Analysis Questionnaire")
             
-            user_responses = []
+            audit_results = []
             for i, item in enumerate(findings):
-                with st.expander(f"Violation {i+1}: {item['area']}", expanded=True):
-                    st.error(f"**The Regulator Found:** {item['description']}")
-                    st.info(f"💡 **Suggested Simulator Fix:** {item['fix']}")
+                with st.expander(f"{item['area']} - Severity: {item['severity']}", expanded=True):
+                    st.error(f"**Regulatory Finding:** {item['finding']}")
+                    st.info(f"💡 **Simulator Recommendation:** {item['dial_fix']}")
                     
-                    # Interactivity
-                    status = st.select_slider(
-                        "Assessment:",
-                        options=["Critical Gap", "Partial Gap", "Compliant"],
-                        key=f"status_{i}"
-                    )
-                    notes = st.text_area("Remediation Plan:", key=f"notes_{i}")
+                    status = st.select_slider("Internal Assessment:", 
+                                            options=["Critical Gap", "Partial", "Compliant"], 
+                                            key=f"status_{i}")
+                    plan = st.text_area("Remediation Plan:", key=f"plan_{i}")
                     
-                    user_responses.append({"Area": item['area'], "Status": status, "Notes": notes})
+                    audit_results.append({"Area": item['area'], "Status": status, "Plan": plan})
 
-            if st.button("Download Gap Report"):
-                df_report = pd.DataFrame(user_responses)
-                st.download_button("Export CSV", df_report.to_csv(index=False), "gap_report.csv")
+            # Export Capability
+            if audit_results:
+                csv = pd.DataFrame(audit_results).to_csv(index=False)
+                st.download_button("📩 Download Audit Report", csv, "compliance_audit.csv", "text/csv")
 
         except Exception as e:
-            st.error(f"Error processing AI response: {e}")
-            st.write("Raw Response:", response.text)
+            st.error(f"Analysis Failed: {e}")
